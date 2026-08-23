@@ -106,6 +106,7 @@ class StroboModel(nn.Module):
         outs = {k: [] for k in ("fire", "logit", "p_policy", "gate", "coh", "fisher", "mean",
                                 "logvar", "theta", "omega", "amp", "wave")}
         training = self.training
+        sd_acc = torch.zeros(Bt, device=dev)                         # sigma-delta accumulator (eval)
         period = None if force_rate is None else max(1, int(round(1.0 / max(force_rate, 1e-6))))
 
         for t in range(T):
@@ -131,8 +132,15 @@ class StroboModel(nn.Module):
             else:
                 # union of policy and fallback in logit space: p = 1-(1-p_pol)(1-gate)
                 p = 1 - (1 - p_pol) * (1 - gate)
-                eff_logit = torch.logit(p.clamp(1e-5, 1 - 1e-5))
-                fire = gumbel_bernoulli(eff_logit, tau, hard, training)
+                if training:
+                    eff_logit = torch.logit(p.clamp(1e-5, 1 - 1e-5))
+                    fire = gumbel_bernoulli(eff_logit, tau, hard, True)
+                else:
+                    # deterministic sigma-delta: fire when accumulated probability crosses 1.
+                    # Reproduces the trained mean rate and fires where p peaks (no RNG on device).
+                    sd_acc = sd_acc + p * (refr <= 0).float()
+                    fire = (sd_acc >= 1.0).float()
+                    sd_acc = sd_acc - fire
             fire = fire * (refr <= 0).float()
             fire_h = (fire > 0.5).float().detach()
             # observation (straight-through gradient flows through `fire`)

@@ -61,7 +61,7 @@ def _rows(metrics: dict, base: dict) -> list[dict]:
 def run_suite(W: dict, cfg: dict, out_dir: str, methods: list[str] | None = None,
               n_folds: int | None = None, lam_e_list=None, max_folds: int | None = None,
               device=None, log=print, keep_models_for: tuple = ("ours",), seed: int = 0,
-              classical_sweep_limit: int | None = None) -> tuple[pd.DataFrame, dict]:
+              classical_sweep_limit: int | None = None, max_train_windows: int | None = None) -> tuple[pd.DataFrame, dict]:
     """Returns (dataframe of per-fold/per-setting/per-mode metrics, dict of kept models)."""
     os.makedirs(out_dir, exist_ok=True)
     csv_path = os.path.join(out_dir, "results.csv")
@@ -80,6 +80,8 @@ def run_suite(W: dict, cfg: dict, out_dir: str, methods: list[str] | None = None
     if max_folds:
         folds = folds[:max_folds]
     for fold, (tr, te, test_subj) in enumerate(folds):
+        if max_train_windows and tr.size > max_train_windows:
+            tr = np.sort(np.random.default_rng(seed + fold).choice(tr, max_train_windows, replace=False))
         log(f"=== fold {fold}: test subjects {test_subj} ({tr.size} train / {te.size} test windows)")
         shared = None  # mask-agnostic pretrained model for classical baselines
         for name in methods:

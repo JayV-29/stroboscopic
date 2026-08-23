@@ -45,17 +45,18 @@ class OscillatorBank(nn.Module):
         with torch.no_grad():
             self.drive.weight.mul_(0.1)
         ang = torch.linspace(0, 2 * math.pi, n_bins + 1)[:-1]
-        self.template = nn.Parameter(0.5 * torch.cos(ang)[None].repeat(n_osc, 1))   # (N, n_bins)
-        # innovation gains (softplus): phase ~0.5, frequency ~0.02
-        self.gain_theta = nn.Parameter(torch.full((n_osc,), math.log(math.e ** 0.5 - 1)))
-        self.gain_omega = nn.Parameter(torch.full((n_osc,), math.log(math.e ** 0.02 - 1)))
+        self.template = nn.Parameter(0.3 * torch.cos(ang)[None].repeat(n_osc, 1))   # (N, n_bins)
+        # innovation gains (softplus): Gauss-Newton step fractions, phase ~1.0, frequency ~0.3
+        self.gain_theta = nn.Parameter(torch.full((n_osc,), math.log(math.e ** 0.3 - 1)))
+        self.gain_omega = nn.Parameter(torch.full((n_osc,), math.log(math.e ** 0.1 - 1)))
+        self.amp_bias = nn.Parameter(torch.full((n_osc,), -1.5))          # a ~ 0.18 at init
         self.group_logit = nn.Parameter(torch.zeros(n_osc))
 
     # ---------------------------------------------------------------- state
     def init_state(self, batch: int, device=None):
         theta = torch.rand(batch, self.N, device=device) * 2 * math.pi
         omega = self.omega0[None].expand(batch, -1).clone()
-        return {"theta": theta, "omega": omega, "amp": torch.full((batch, self.N), 0.5, device=device),
+        return {"theta": theta, "omega": omega, "amp": torch.sigmoid(self.amp_bias)[None].expand(batch, -1).clone(),
                 "om_mean": omega.clone(), "om_sq": omega.clone() ** 2,
                 "r_ema": torch.full((batch, 1), 0.5, device=device),
                 "res_ema": torch.ones(batch, 1, device=device)}
@@ -90,13 +91,16 @@ class OscillatorBank(nn.Module):
         # normalised residual energy of this burst -> EMA held between bursts (prediction coherence)
         e = (resid ** 2).mean(-1, keepdim=True) / ((obs ** 2).mean(-1, keepdim=True) + 1e-3)
         res_ema = obs_flag * (0.7 * st["res_ema"] + 0.3 * e.clamp(max=4.0)) + (1 - obs_flag) * st["res_ema"]
-        # d(-0.5*resid^2)/d theta_i = a_i * sum_j resid_j * dw_ij
-        s = resid[:, None, :] * dw                                                    # (B,N,L)
-        d_theta = amp * s.mean(-1)
-        d_omega = amp * (s * self.burst_off[None, None]).mean(-1)
+        # Gauss-Newton (linearised least-squares) correction of each oscillator's phase and
+        # frequency: d_theta_i = <r, J_theta_i> / (|J_theta_i|^2 + eps), J = a_i * dw_i
+        J_t = amp[:, :, None] * dw                                                    # (B,N,L)
+        J_o = J_t * self.burst_off[None, None]
+        r = resid[:, None, :]
+        d_theta = (r * J_t).sum(-1) / ((J_t ** 2).sum(-1) + 0.05)
+        d_omega = (r * J_o).sum(-1) / ((J_o ** 2).sum(-1) + 0.05)
         g_t, g_o = F.softplus(self.gain_theta)[None], F.softplus(self.gain_omega)[None]
-        theta = theta + torch.tanh(g_t * d_theta)                                     # <= 1 rad per burst
-        omega = (omega * (1 + 0.2 * torch.tanh(g_o * d_omega))).clamp(self.w_min, self.w_max)
+        theta = theta + 1.5 * torch.tanh(g_t * d_theta / 1.5)                         # <= 1.5 rad per burst
+        omega = (omega + 0.1 * omega * torch.tanh(g_o * d_omega / (omega + 1e-6))).clamp(self.w_min, self.w_max)
         return {**st, "theta": theta, "omega": omega, "res_ema": res_ema}
 
     def step(self, st: dict, feat: torch.Tensor, obs: torch.Tensor, obs_flag: torch.Tensor) -> dict:
@@ -108,7 +112,7 @@ class OscillatorBank(nn.Module):
         coupling = (self.K[None] * torch.sin(diff)).sum(-1)
         theta = torch.remainder(theta + omega + coupling + 0.5 * torch.tanh(d_theta), 2 * math.pi)
         omega = (omega * (1 + 0.02 * torch.tanh(d_omega))).clamp(self.w_min, self.w_max)
-        amp = torch.sigmoid(a_logit)
+        amp = torch.sigmoid(a_logit + self.amp_bias)
         alpha = 1.0 / self.fs
         om_mean = (1 - alpha) * st["om_mean"] + alpha * omega
         om_sq = (1 - alpha) * st["om_sq"] + alpha * omega ** 2

@@ -6,8 +6,8 @@ mode.  It reproduces the qualitative structure the model has to exploit:
 * HR drifts slowly and rises during motion segments.
 * PPG is a fixed pulse template evaluated at the cardiac phase, with a
   gait-locked motion artefact of comparable amplitude during motion.
-* ACC carries gravity, strong gait harmonics during motion, and a very weak
-  ballistocardiographic component at rest.
+* ACC carries gravity and strong gait harmonics during motion, but no cardiac
+  information, so HR is only reachable through PPG bursts.
 """
 from __future__ import annotations
 
@@ -82,8 +82,8 @@ def make_synthetic_recording(subject: str, minutes: float = 10.0, fs: int = 32, 
         -0.98 + env * (0.7 * np.sin(gp + 1.1) + 0.2 * np.sin(3 * gp)),
         0.05 + env * (0.5 * np.sin(2 * gp + 0.3)),
     ], axis=1)
-    bcg = 0.01 * np.interp(t_tick, t_exp, np.gradient(pulse_template(phase)))  # tiny cardiac trace
-    acc = acc + bcg[:, None] + rng.normal(0, 0.03, acc.shape)
+    # no cardiac trace in the wrist IMU: HR must come from the PPG bursts (plan, risk 2)
+    acc = acc + rng.normal(0, 0.03, acc.shape)
     cheap = acc.astype(np.float32)
 
     # ---- targets

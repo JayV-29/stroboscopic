@@ -71,9 +71,11 @@ viz.use_style()
 
 cfg = yaml.safe_load(open(os.path.join(PKG, "configs/default.yaml")))
 PRESET = {
-    "demo":  dict(epochs=6, warm_epochs=1, finetune_epochs=1, n_folds=2, max_folds=1, lam_e=[0.0, 1.0, 3.0, 10.0], classical=4, minutes=6.0),
-    "quick": dict(epochs=4, warm_epochs=1, finetune_epochs=1, n_folds=5, max_folds=2, lam_e=[0.0, 0.3, 1.0, 3.0, 10.0], classical=5, minutes=8.0),
-    "full":  dict(epochs=6, warm_epochs=1, finetune_epochs=2, n_folds=5, max_folds=None, lam_e=[0.0, 0.1, 0.3, 1.0, 3.0, 10.0, 30.0], classical=None, minutes=8.0),
+    # max_train_windows caps the training set per fold (8 s windows, 4 s stride); the per-tick recurrent loop is
+    # python-bound (~0.4 s per batch of 64 on a T4), so this is what sets the runtime.
+    "demo":  dict(epochs=6, warm_epochs=1, finetune_epochs=1, n_folds=2, max_folds=1, lam_e=[0.0, 1.0, 3.0, 10.0], classical=4, minutes=6.0, max_train_windows=600),
+    "quick": dict(epochs=4, warm_epochs=1, finetune_epochs=1, n_folds=5, max_folds=2, lam_e=[0.0, 0.3, 1.0, 3.0, 10.0], classical=5, minutes=8.0, max_train_windows=5000),
+    "full":  dict(epochs=5, warm_epochs=1, finetune_epochs=2, n_folds=5, max_folds=3, lam_e=[0.0, 0.1, 0.3, 1.0, 3.0, 10.0], classical=6, minutes=8.0, max_train_windows=9000),
 }[MODE]
 cfg["train"].update(epochs=PRESET["epochs"], warm_epochs=PRESET["warm_epochs"], finetune_epochs=PRESET["finetune_epochs"])
 cfg["data"]["n_folds"] = PRESET["n_folds"]
@@ -152,7 +154,8 @@ sampling head. Every row is saved to `results.csv` as it finishes.""")
 code(r'''t0 = time.time()
 df, kept = run_suite(W, cfg, os.path.join(OUT, "dalia"), methods=list(METHODS), n_folds=PRESET["n_folds"],
                      lam_e_list=PRESET["lam_e"], max_folds=PRESET["max_folds"], device=dev,
-                     classical_sweep_limit=PRESET["classical"], keep_models_for=("ours", "learned_threshold", "fixed_rate"))
+                     classical_sweep_limit=PRESET["classical"], keep_models_for=("ours", "learned_threshold", "fixed_rate"),
+                     max_train_windows=PRESET["max_train_windows"])
 print(f"suite finished in {(time.time()-t0)/60:.1f} min; {len(df)} rows")
 df.to_csv(f"{OUT}/dalia_results.csv", index=False)
 agg = aggregate(df, "hr"); agg.to_csv(f"{OUT}/dalia_curves.csv", index=False)
@@ -255,7 +258,7 @@ for name, loader, kw, target in [("wesad_resp", lambda r, **k: load_wesad(r, tas
         Wx = make_windows(recs, cfg["data"]["window_s"], cfg["data"]["stride_s"])
         dfx, keptx = run_suite(Wx, cfg, os.path.join(OUT, name), methods=XT_METHODS, n_folds=min(PRESET["n_folds"], len(set(Wx["subject"]))),
                                lam_e_list=PRESET["lam_e"], max_folds=1 if MODE != "full" else 3, device=dev,
-                               classical_sweep_limit=PRESET["classical"], keep_models_for=())
+                               classical_sweep_limit=PRESET["classical"], keep_models_for=(), max_train_windows=PRESET["max_train_windows"] // 2)
         cross[name] = (dfx, target, is_syn)
         modes = ("rest", "motion") if (dfx[dfx["mode"] == "motion"]["n_ticks"].sum() > 0 and dfx[dfx["mode"] == "rest"]["n_ticks"].sum() > 0) else ("all",)
         fig = viz.plot_curves(dfx, target, path=f"{OUT}/fig7_{name}_curves.png", modes=modes,
@@ -340,17 +343,59 @@ fig = viz.table_figure(pd.DataFrame({"value": cost}), f"{OUT}/fig10_cost_table.p
 torch.save({"state_dict": model.state_dict(), "config": model.cfg.to_dict()}, f"{OUT}/strobo_model.pt")
 ''')
 
-md(r"""## 9. Everything on one image, and the file list""")
+md(r"""## 9. Presentation images and the results ZIP
 
-code(r'''poster = viz.compose_poster([f"{OUT}/{p}" for p in ("fig1_architecture.png", "fig2_hr_curves.png", "fig4_phase_histogram.png",
+Beyond the matplotlib figures: CC-licensed photographs of the actual technology (PPG front-end, wrist wearable,
+Cortex-M MCU, IMU) are pulled from Wikimedia Commons with attribution (needs *Settings → Internet: on*; skipped
+gracefully otherwise), and PIL composites are built from them: a 1920×1080 hero card with the headline numbers,
+a "what runs on the device" card, a poster and a contact sheet of every figure. Everything — CSVs, PNGs, GIF,
+model weights, photos, attribution, summary — is zipped into one download.""")
+
+code(r"""from strobo import images as simg
+photos = simg.gather_photos(OUT)                       # {key: attribution dict}; empty without internet
+photo_paths = {k: f"{OUT}/photos/{k}.jpg" for k in photos}
+stats = {"HR MAE @1 burst/beat, motion": f"{ours_motion:.1f} bpm", "parameters": f"{cost['params']/1000:.1f} k",
+         "MACs per IMU tick": f"{cost['MACs/tick (amortised)']:,}", "phase-locking R (rest)": f"{hists['rest']['R']:.2f}",
+         "criterion": ("PASS" if (crit1 and crit2) else "FAIL") + (" (synthetic)" if syn_dalia else "")}
+hero = simg.hero_card(f"{OUT}/img_hero.png", stats, photo_paths.get("smartwatch") or photo_paths.get("empatica_e4") or photo_paths.get("ppg_sensor"),
+                      f"{OUT}/fig2_hr_curves.png")
+device = simg.device_card(f"{OUT}/img_device.png", cost, {"uj_per_burst": 135, "uj_per_imu_tick": 1.1}, photo_paths)
+display(Image(filename=hero, width=1000)); display(Image(filename=device, width=1000))
+""")
+
+code(r"""poster = viz.compose_poster([f"{OUT}/{p}" for p in ("fig1_architecture.png", "fig2_hr_curves.png", "fig4_phase_histogram.png",
                                                        "fig5_trace_motion.png", "fig3_headline_table.png", "fig6_ablation_table.png")],
-                            f"{OUT}/poster.png", cols=2, title=("Stroboscopic sensing — results" + (" (synthetic demo)" if syn_dalia else " (PPG-DaLiA)")))
+                            f"{OUT}/img_poster.png", cols=2, title=("Stroboscopic sensing — results" + (" (synthetic demo)" if syn_dalia else " (PPG-DaLiA)")))
+sheet = simg.contact_sheet(f"{OUT}/img_contact_sheet.png", sorted(glob.glob(f"{OUT}/fig*.png")), "All figures")
 display(Image(filename=poster, width=1000))
 summary = {"mode": MODE, "synthetic_dalia": bool(syn_dalia), "criterion_1_pass": bool(crit1), "criterion_2_pass": bool(crit2),
-           "headline": H.round(3).to_dict(), "cost": cost, "files": sorted(os.listdir(OUT))}
+           "headline": H.round(3).to_dict(), "cost": cost, "photos": photos, "files": sorted(os.listdir(OUT))}
 json.dump(summary, open(f"{OUT}/summary.json", "w"), indent=1, default=str)
-print("\n".join(sorted(os.listdir(OUT))))
+""")
+
+code(r"""# ---- one ZIP with everything (download it from the Output tab / the link below)
+import shutil, zipfile
+zip_path = os.path.join(os.path.dirname(OUT.rstrip("/")) or ".", f"stroboscopic_results_{MODE}.zip")
+with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as z:
+    for root, _, files in os.walk(OUT):
+        for fn in files:
+            fp = os.path.join(root, fn); z.write(fp, os.path.relpath(fp, os.path.dirname(OUT.rstrip("/"))))
+    z.writestr("README.txt", f'''Stroboscopic sensing - results bundle (MODE={MODE})
+results/dalia/results.csv          every method x setting x fold x mode (HR, HRV)
+results/dalia_curves.csv           mean±sd over folds, one row per Pareto point
+results/*_results.csv, cross_task.csv, ablation.csv, mitbih_fallback.csv, cost.json, summary.json
+results/fig*.png                   matplotlib figures (200 dpi)
+results/img_hero.png, img_device.png, img_poster.png, img_contact_sheet.png   PIL composites (1920x1080 / poster)
+results/anim_oscillators_motion.gif animation of the oscillators sampling a PPG trace
+results/photos/                    CC photos from Wikimedia Commons + ATTRIBUTION.md
+results/strobo_model.pt            trained model (fold 0, diagnostic setting)
 ''')
+mb = os.path.getsize(zip_path) / 1e6
+print(f"wrote {zip_path} ({mb:.1f} MB) with {len(list(os.walk(OUT)))} folders")
+try:
+    from IPython.display import FileLink; display(FileLink(zip_path))
+except Exception: pass
+""")
 
 md(r"""### Reading the result
 
