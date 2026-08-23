@@ -1,0 +1,43 @@
+# Default configuration for strobo/train.py and run_experiments.py
+seed: 0
+device: auto            # auto | cpu | cuda
+
+data:
+  dataset: synthetic    # synthetic | ppg_dalia | wesad_resp | wesad_hr | uci_har | mitbih
+  root: /kaggle/input   # searched recursively for each dataset's files
+  window_s: 8.0
+  stride_s: 4.0
+  n_folds: 5
+  synthetic:
+    n_subjects: 6
+    minutes: 8.0
+
+model:
+  n_osc: 12
+  feat_dim: 32
+  enc_ch: 16
+  n_buffer: 4
+  hidden_dec: 64
+  hidden_head: 32
+  burst_ticks: 4
+  f_min: 0.1
+  f_max: 4.0
+  init_rate: 0.05
+  warmup_s: 2.0
+
+train:
+  epochs: 6
+  warm_epochs: 1          # fixed-rate warm start before Gumbel training
+  batch_size: 64
+  lr: 2.0e-3
+  weight_decay: 1.0e-5
+  tau0: 1.0
+  tau1: 0.1
+  lam_f: 0.1
+  lam_c: 0.01
+  lam_r: 1.0
+  grad_clip: 1.0
+  finetune_epochs: 2      # decoder-only epochs for classical baselines
+
+sweep:
+  lam_e: [0.0, 0.3, 1.0, 3.0, 10.0]

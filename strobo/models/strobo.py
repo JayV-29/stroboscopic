@@ -60,7 +60,7 @@ class StroboModel(nn.Module):
         osc_feat = 4 * c.n_osc
         # sampling-head input
         if c.sampler_mode == "phase":
-            head_in = osc_feat + 2 + self.obs_dim + 2          # +coherence(2) + last burst + [tsl, tsl>1s]
+            head_in = osc_feat + OscillatorBank.N_COH + self.obs_dim + 2   # + coherence + last burst + [tsl, tsl>1s]
         else:
             head_in = c.feat_dim + self.obs_dim + 2
         self.head = SamplingHead(head_in, c.hidden_head, c.init_rate)
@@ -68,7 +68,7 @@ class StroboModel(nn.Module):
         self.fallback_thr = nn.Parameter(torch.tensor(-1.5))     # sigmoid -> ~0.18
         # decoder input
         buf_dim = c.n_buffer * (self.obs_dim + 1)
-        dec_in = osc_feat + 2 + c.feat_dim + buf_dim
+        dec_in = osc_feat + OscillatorBank.N_COH + c.feat_dim + buf_dim
         self.decoder = Decoder(dec_in, c.n_targets, c.hidden_dec)
         # target normalisation
         self.register_buffer("t_mean", torch.zeros(c.n_targets))
@@ -110,7 +110,7 @@ class StroboModel(nn.Module):
 
         for t in range(T):
             f_t = feats[:, t]
-            coh = self.osc.coherence(st)                             # (B,2)
+            coh = self.osc.coherence(st)                             # (B,3)
             ofeat = self.osc.features(st)
             tsl_feat = torch.stack([tsl.clamp(max=5.0) / 5.0, (tsl > 1.0).float()], -1)
             if c.sampler_mode == "phase":
