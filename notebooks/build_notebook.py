@@ -37,7 +37,7 @@ import os, sys, glob, json, time, subprocess, warnings
 warnings.filterwarnings("ignore")
 
 MODE      = os.environ.get("STROBO_MODE", "quick")      # demo | quick | full
-REPO_URL  = "https://github.com/AIscend-Research/stroboscopic"  # source of the `strobo` package
+REPO_URL  = "https://github.com/JayV-29/stroboscopic"  # source of the `strobo` package
 DATA_ROOT = "/kaggle/input"                              # searched recursively for the four datasets
 OUT       = "/kaggle/working/results" if os.path.exists("/kaggle/working") else "results/notebook"
 SEED      = 0
