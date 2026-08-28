@@ -13,8 +13,15 @@ from .train import make_loader, to_device, get_device
 
 @torch.no_grad()
 def run_inference(model, W: dict, idx: np.ndarray, policy_fn=None, device=None, batch_size: int = 128,
-                  keep_states: bool = False) -> dict:
+                  keep_states: bool = False, seed: int = 0) -> dict:
     dev = device or get_device()
+    # The oscillator bank draws its initial phases uniformly at random on every forward
+    # pass (OscillatorBank.init_state), so without a fixed seed the *same* trained model
+    # scores differently each time it is evaluated.  Seed here so a reported number is
+    # reproducible and a resumed run reproduces the rows already in results.csv.
+    # (The first `warmup_s` seconds are excluded from every metric anyway, which is what
+    # absorbs the lock-in transient from this initialisation.)
+    torch.manual_seed(seed)
     model.to(dev).eval()
     fs, B = float(W["fs"]), model.cfg.burst_ticks
     loader = make_loader(W, idx, batch_size, False)

@@ -7,6 +7,7 @@ folds, and appends rows to a CSV so plots never need retraining.
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import os
 import time
@@ -58,6 +59,49 @@ def _rows(metrics: dict, base: dict) -> list[dict]:
     return rows
 
 
+def _kept_path(out_dir: str, name: str, setting: str) -> str:
+    """Checkpoint path for a diagnostic model (weights only, ~80 kB)."""
+    h = hashlib.md5(setting.encode()).hexdigest()[:10]
+    return os.path.join(out_dir, "kept", f"{name}__{h}.pt")
+
+
+def _model_for(W: dict, cm: dict, spec: dict, s: dict, tr: np.ndarray):
+    """(fresh model, policy_fn) matching the architecture the trainer builds for `spec`."""
+    if spec["kind"] == "learned":
+        return build_model(W, cm, spec["sampler_mode"], spec["use_fisher"], spec["use_fallback"], tr), None
+    return build_model(W, cm, "external", False, False, tr), spec["cls"](**s)
+
+
+def _save_kept(out_dir: str, name: str, setting: str, model, te: np.ndarray) -> None:
+    path = _kept_path(out_dir, name, setting)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    torch.save({"state_dict": model.state_dict(), "config": model.cfg.to_dict(),
+                "test_idx": torch.as_tensor(np.asarray(te))}, path)
+
+
+def _restore_kept(kept: dict, out_dir: str, name: str, s: dict, W: dict, cm: dict,
+                  spec: dict, tr: np.ndarray, te: np.ndarray, dev, log) -> bool:
+    """Rebuild a kept model from disk after a resume: load weights, re-run inference only.
+
+    Without this a resumed run returns an empty `kept`, and the notebook cells that
+    dereference it (phase histogram, cost, hero/summary) crash with a TypeError.
+    """
+    setting = _setting_str(s)
+    path = _kept_path(out_dir, name, setting)
+    if not os.path.exists(path):
+        log(f"    {name:18s} {str(s):40s} no checkpoint; diagnostics unavailable for this setting")
+        return False
+    ck = torch.load(path, map_location="cpu")
+    model, policy = _model_for(W, cm, spec, s, tr)
+    model.load_state_dict(ck["state_dict"])
+    idx = ck["test_idx"].numpy() if "test_idx" in ck else np.asarray(te)
+    res = run_inference(model, W, idx, policy_fn=policy, device=dev, keep_states=True)
+    ph = {m: phase_histogram(res, m) for m in ("rest", "motion", "all")}
+    kept[(name, setting)] = {"model": model.cpu(), "res": res, "hist": ph, "test_idx": idx}
+    log(f"    {name:18s} {str(s):40s} restored from checkpoint (inference only)")
+    return True
+
+
 def run_suite(W: dict, cfg: dict, out_dir: str, methods: list[str] | None = None,
               n_folds: int | None = None, lam_e_list=None, max_folds: int | None = None,
               device=None, log=print, keep_models_for: tuple = ("ours",), seed: int = 0,
@@ -95,6 +139,8 @@ def run_suite(W: dict, cfg: dict, out_dir: str, methods: list[str] | None = None
             for s in settings:
                 key = (name, _setting_str(s), fold)
                 if key in done:
+                    if name in keep_models_for and fold == 0:
+                        _restore_kept(kept, out_dir, name, s, W, cm, spec, tr, te, dev, log)
                     continue
                 set_seed(seed + fold)
                 t0 = time.time()
@@ -128,6 +174,7 @@ def run_suite(W: dict, cfg: dict, out_dir: str, methods: list[str] | None = None
                 if name in keep_models_for and fold == 0:
                     kept[(name, _setting_str(s))] = {"model": model.cpu(), "res": res, "hist": ph,
                                                      "test_idx": te}
+                    _save_kept(out_dir, name, _setting_str(s), model, te)
                 torch.cuda.empty_cache() if torch.cuda.is_available() else None
     df = pd.DataFrame(rows)
     return df, kept

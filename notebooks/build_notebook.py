@@ -37,7 +37,7 @@ import os, sys, glob, json, time, subprocess, warnings
 warnings.filterwarnings("ignore")
 
 MODE      = os.environ.get("STROBO_MODE", "quick")      # demo | quick | full
-REPO_URL  = "https://github.com/welu2027/stroboscopic"  # source of the `strobo` package
+REPO_URL  = "https://github.com/AIscend-Research/stroboscopic"  # source of the `strobo` package
 DATA_ROOT = "/kaggle/input"                              # searched recursively for the four datasets
 OUT       = "/kaggle/working/results" if os.path.exists("/kaggle/working") else "results/notebook"
 SEED      = 0
@@ -329,7 +329,9 @@ q = quantize_model_int8(model)
 # calibrate on real decoder activations from a test batch
 xb = torch.from_numpy(W["cheap"][K["test_idx"][:8]]); eb = torch.from_numpy(W["expensive"][K["test_idx"][:8]])
 acts = {}
-h = model.decoder.net[0].register_forward_hook(lambda mod, inp, out: acts.setdefault("x", inp[0].detach()))
+# NB: a forward hook that RETURNS non-None replaces the module output, so use
+# dict.update (returns None), never dict.setdefault (returns the value).
+h = model.decoder.net[0].register_forward_hook(lambda mod, inp, out: acts.update(x=inp[0].detach()))
 with torch.no_grad(): model.cpu().eval()(xb, eb)
 h.remove()
 chk = int8_forward_check(model, acts["x"], "decoder.net.0")
